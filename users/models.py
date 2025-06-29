@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from lms.models import Course, Lesson
 
 
 class User(AbstractUser):
@@ -26,3 +27,38 @@ class User(AbstractUser):
         verbose_name = "user"
         verbose_name_plural = "users"
         ordering = ["email"]
+
+
+class Payments(models.Model):
+    """
+    Model representing a payment made by a user.
+    """
+    PAYMENT_METHOD_CASH = "cash"
+    PAYMENT_METHOD_TRANSFER = "bank transfer"
+    PAYMENT_METHOD_CHOICES = [
+        (PAYMENT_METHOD_CASH, "cash"),
+        (PAYMENT_METHOD_TRANSFER, "bank transfer"),
+    ]
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payments", verbose_name="user",
+                             help_text="Select the user who made the payment.")
+    payment_date = models.DateField(auto_now_add=True, verbose_name="payment date",
+                                    help_text="The date when the payment was made.")
+    course = models.ForeignKey(Course, on_delete=models.SET_NULL, blank=True, null=True, related_name="payments",
+                               verbose_name="course", help_text="Select the course for which the payment was made.")
+    lesson = models.ForeignKey(Lesson, on_delete=models.SET_NULL, blank=True, null=True, related_name="payments",
+                               verbose_name="lesson",
+                               help_text="Select the lesson for which the payment was made. Optional.")
+    amount = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="amount",
+                                 help_text="Enter the amount of the payment.")
+    payment_method = models.CharField(max_length=14, choices=PAYMENT_METHOD_CHOICES, verbose_name="payment method",
+                                      help_text="Select the method of payment.")
+
+    def __str__(self):
+        return (f"Payment from {self.user.email} - {self.course.name or self.lesson.name} - "
+                f"{self.amount} {self.payment_method}")
+
+    class Meta:
+        verbose_name = "payment"
+        verbose_name_plural = "payments"
+        ordering = ["-payment_date"]  # Most recent payments first
