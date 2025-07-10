@@ -6,7 +6,7 @@ from users.models import User
 class LessonSerializer(ModelSerializer):
     class Meta:
         model = Lesson
-        fields = '__all__'
+        fields = "__all__"
 
 
 class CourseSerializer(ModelSerializer):
@@ -19,5 +19,5 @@ class CourseSerializer(ModelSerializer):
     class Meta:
         model = Course
         fields = [
-            'id', 'name', 'preview', 'description', 'lessons_count', 'lessons'
+            "id", "name", "preview", "description", "owner", "lessons_count", "lessons"
         ]
