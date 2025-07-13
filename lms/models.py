@@ -18,7 +18,7 @@ class Course(models.Model):
     class Meta:
         verbose_name = "Course"
         verbose_name_plural = "Courses"
-        ordering = ['name']
+        ordering = ["name"]
 
 
 class Lesson(models.Model):
@@ -41,4 +41,21 @@ class Lesson(models.Model):
     class Meta:
         verbose_name = "Lesson"
         verbose_name_plural = "Lessons"
-        ordering = ['name']
+        ordering = ["name"]
+
+
+class CourseSubscription(models.Model):
+    """Model representing a subscription to a course."""
+    user = models.ForeignKey(AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="course_subscriptions",
+                             verbose_name="User", help_text="Select the user who subscribed to the course")
+    course = models.ForeignKey(Course, on_delete=models.CASCADE, related_name="subscriptions",
+                               verbose_name="Course", help_text="Select the course that the user subscribed to")
+
+    def __str__(self):
+        return f"{self.user.username} - {self.course.name}"
+
+    class Meta:
+        verbose_name = "Course Subscription"
+        verbose_name_plural = "Course Subscriptions"
+        unique_together = ("user", "course")
+        ordering = ["user", "course"]
