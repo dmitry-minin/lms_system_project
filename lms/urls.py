@@ -7,7 +7,8 @@ from lms.views import (
     LessonRetrieveAPIView,
     LessonCreateAPIView,
     LessonUpdateAPIView,
-    LessonDestroyAPIView
+    LessonDestroyAPIView,
+    CourseSubscriptionAPIView
 )
 
 
@@ -22,4 +23,6 @@ urlpatterns = [
     path('lessons/create/', LessonCreateAPIView.as_view(), name='lesson-create'),
     path('lessons/<int:pk>/update/', LessonUpdateAPIView.as_view(), name='lesson-update'),
     path('lessons/<int:pk>/delete/', LessonDestroyAPIView.as_view(), name='lesson-delete'),
+
+    path('subscriptions/', CourseSubscriptionAPIView.as_view(), name='course-subscription'),
 ] + router.urls
