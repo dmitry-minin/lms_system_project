@@ -33,13 +33,6 @@ class Payments(models.Model):
     """
     Model representing a payment made by a user.
     """
-    PAYMENT_METHOD_CASH = "cash"
-    PAYMENT_METHOD_TRANSFER = "bank transfer"
-    PAYMENT_METHOD_CHOICES = [
-        (PAYMENT_METHOD_CASH, "cash"),
-        (PAYMENT_METHOD_TRANSFER, "bank transfer"),
-    ]
-
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="payments", verbose_name="user",
                              help_text="Select the user who made the payment.")
     payment_date = models.DateField(auto_now_add=True, verbose_name="payment date",
@@ -51,11 +44,16 @@ class Payments(models.Model):
                                help_text="Select the lesson for which the payment was made. Optional.")
     amount = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="amount",
                                  help_text="Enter the amount of the payment.")
-    payment_method = models.CharField(max_length=14, choices=PAYMENT_METHOD_CHOICES, verbose_name="payment method",
+    payment_method = models.CharField(max_length=100, blank=True, null=True, verbose_name="payment method",
                                       help_text="Select the method of payment.")
+    payment_status = models.CharField(max_length=50, blank=True, null=True, verbose_name="payment status")
+    session_id = models.CharField(max_length=255, blank=True, null=True, verbose_name="session ID")
+    link = models.URLField(max_length=400, blank=True, null=True, verbose_name="payment link")
 
     def __str__(self):
-        return (f"Payment from {self.user.email} - {self.course.name or self.lesson.name} - "
+        course_name = self.course.name if self.course else None
+        lesson_name = self.lesson.name if self.lesson else None
+        return (f"Payment from {self.user.email} - {course_name or lesson_name} - "
                 f"{self.amount} {self.payment_method}")
 
     class Meta:

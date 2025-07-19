@@ -1,12 +1,24 @@
 from rest_framework.serializers import ModelSerializer
 from users.models import User, Payments
+from users.validators import AtLeastOneFieldRequiredValidator
 
 
 class PaymentSerializer(ModelSerializer):
     class Meta:
         model = Payments
-        fields = ["id", "user", "payment_date", "course", "lesson", "amount", "payment_method"]
-        read_only_fields = ["id", "payment_date"]
+        fields = ["id", "user", "payment_date", "course", "lesson", "amount", "payment_method", "session_id", "link",
+                  "payment_status"]
+        read_only_fields = ["id", "user", "payment_date", "payment_method", "payment_status", "session_id", "link"]
+        validators = [AtLeastOneFieldRequiredValidator(fields=["course", "lesson"])]
+
+
+class PaymentUpdateSerializer(ModelSerializer):
+    class Meta:
+        model = Payments
+        fields = ["id", "user", "payment_date", "course", "lesson", "amount", "payment_method", "payment_status",
+                  "session_id", "link"]
+        read_only_fields = ["user", "payment_date", "course", "lesson", "amount", "payment_method", "payment_status",
+                            "session_id","link"]
 
 
 class UserSerializer(ModelSerializer):
@@ -40,4 +52,3 @@ class UserCreateSerializer(ModelSerializer):
         user.set_password(password)
         user.save()
         return user
-
