@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from lms.paginators import CustomPageNumberPagination
+from lms.services import check_if_notification_needed
 from users.permissions import IsModerator, IsOwner
 
 from lms.models import Course, Lesson, CourseSubscription
@@ -11,6 +12,7 @@ from rest_framework.generics import ListAPIView, RetrieveAPIView, CreateAPIView,
     GenericAPIView, get_object_or_404
 
 from lms.serializer import CourseSerializer, LessonSerializer, CourseSubscriptionSerializer
+from lms.tasks import send_course_update_email
 
 
 class CourseViewSet(ModelViewSet):
@@ -49,6 +51,20 @@ class CourseViewSet(ModelViewSet):
         Override the create method to set the owner of the course to the current user.
         """
         serializer.save(owner=self.request.user)
+
+    def perform_update(self, serializer):
+        """
+        Override the update method to handle course updates.
+        This can include sending notifications or logging changes.
+        """
+        current_course_data = self.get_object()
+        course_name = current_course_data.name
+        update_is_needed, recipients = check_if_notification_needed(current_info=current_course_data)
+        print(update_is_needed, recipients)
+        updated_data = serializer.validated_data
+        serializer.save()
+        if update_is_needed:
+            send_course_update_email.delay(recipients, course_name, updated_data)
 
 
 class LessonListAPIView(ListAPIView):
