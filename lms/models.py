@@ -11,6 +11,8 @@ class Course(models.Model):
                                    help_text="Enter a brief description of the course")
     owner = models.ForeignKey(AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="courses", blank=True, null=True,
                               verbose_name="Course Owner", help_text="Fill in the owner of the course. Optional.")
+    updated_at = models.DateTimeField(auto_now=True, blank=True, null=True, verbose_name="Updated At",
+                                      help_text="The date and time when the course was last updated")
 
     def __str__(self):
         return self.name
