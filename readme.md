@@ -1,5 +1,12 @@
-Проект LMS-системы для обучения.
-Данная система позволяет создавать курсы, уроки, управлять пользователями.
+LMS sysem project.
+This system allows you to create courses, lessons, and manage users.
+
+# Features
+Cotains models:
+- User
+- Course
+- Lesson
+- Payments
 
 Feature2:
 - added lessons_count field to course serializer
