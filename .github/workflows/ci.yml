@@ -1,0 +1,218 @@
+name: Django CI
+
+on: [ push, pull_request ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test_user -d test_db" 
+          --health-interval 10s 
+          --health-timeout 5s 
+          --health-retries 5
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          pip install poetry
+          poetry --version
+
+      - name: Cache Poetry dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pypoetry
+          key: ${{ runner.os }}-poetry-${{ hashFiles('**/poetry.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-poetry
+
+      - name: Create .env for CI
+        run: |
+          cat > .env << 'EOF'
+          # Django
+          SECRET_KEY=test
+          DEBUG=0
+          # DB (provide both common naming schemes to match project settings)
+          POSTGRES_DB=test_db
+          POSTGRES_USER=test_user
+          POSTGRES_PASSWORD=test_password
+          POSTGRES_HOST=127.0.0.1
+          POSTGRES_PORT=5432
+          DB_NAME=test_db
+          DB_USER=test_user
+          DB_PASSWORD=test_password
+          DB_HOST=127.0.0.1
+          DB_PORT=5432
+          EOF
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-ansi --no-root
+
+      - name: Run migrations
+        env:
+          SECRET_KEY: test
+        run: poetry run python manage.py migrate --noinput
+
+      - name: Run tests
+        env:
+          SECRET_KEY: test
+        run: |
+          poetry run coverage run manage.py test -v 2
+          poetry run coverage xml -o coverage.xml
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:latest
+            ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploy to server
+        run: |
+          ssh -i ~/.ssh/id_rsa -o IdentitiesOnly=yes -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SERVER_IP }} << 'EOF'
+            set -e
+            # Choose docker command (fallback to sudo docker if needed)
+            DOCKER=docker
+            if ! $DOCKER info >/dev/null 2>&1; then
+              DOCKER="sudo docker"
+            fi
+            # Path to env file on the server
+            ENV_FILE="/root/lms_app_test/.env"
+            # Ensure env file exists (use sudo for root path access); fail fast with clear message
+            if ! sudo test -f "$ENV_FILE"; then
+              echo "ERROR: Env file not found at $ENV_FILE";
+              exit 1
+            fi
+            # Normalize line endings to avoid parsing issues
+            sudo sed -i 's/\r$//' "$ENV_FILE"
+
+            # Read DB credentials from the server env (do not hardcode in workflow)
+            DB_NAME=$(sudo awk -F= '/^DB_NAME=/{print $2}' "$ENV_FILE")
+            DB_USER=$(sudo awk -F= '/^DB_USER=/{print $2}' "$ENV_FILE")
+            DB_PASSWORD=$(sudo awk -F= '/^DB_PASSWORD=/{print $2}' "$ENV_FILE")
+            if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ]; then
+              echo "ERROR: DB_NAME/DB_USER/DB_PASSWORD must be set in $ENV_FILE"; exit 1; fi
+
+            # Optional DB/Redis settings from env with safe defaults
+            DB_HOST=$(sudo awk -F= '/^DB_HOST=/{print $2}' "$ENV_FILE")
+            DB_PORT=$(sudo awk -F= '/^DB_PORT=/{print $2}' "$ENV_FILE")
+            CELERY_BROKER_URL=$(sudo awk -F= '/^CELERY_BROKER_URL=/{print $2}' "$ENV_FILE")
+            CELERY_RESULT_BACKEND=$(sudo awk -F= '/^CELERY_RESULT_BACKEND=/{print $2}' "$ENV_FILE")
+            # Defaults if not provided
+            [ -z "$DB_HOST" ] && DB_HOST=pg
+            [ -z "$DB_PORT" ] && DB_PORT=5432
+            [ -z "$CELERY_BROKER_URL" ] && CELERY_BROKER_URL=redis://redis:6379/0
+            [ -z "$CELERY_RESULT_BACKEND" ] && CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+            # Docker login and pull app image
+            echo ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }} | $DOCKER login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
+            APP_IMAGE="${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}"
+            $DOCKER pull "$APP_IMAGE"
+
+            # Create network for the stack (idempotent)
+            $DOCKER network create lms_net >/dev/null 2>&1 || true
+
+            # Start Postgres container (idempotent recreate) using creds from env file
+            $DOCKER rm -f pg >/dev/null 2>&1 || true
+            $DOCKER volume create pgdata >/dev/null 2>&1 || true
+            $DOCKER run -d --name pg \
+              --restart unless-stopped \
+              --network lms_net \
+              -v pgdata:/var/lib/postgresql/data \
+              -e POSTGRES_DB="$DB_NAME" \
+              -e POSTGRES_USER="$DB_USER" \
+              -e POSTGRES_PASSWORD="$DB_PASSWORD" \
+              postgres:16
+
+            # Start Redis (optional; safe to run even if unused)
+            $DOCKER rm -f redis >/dev/null 2>&1 || true
+            $DOCKER run -d --name redis \
+              --restart unless-stopped \
+              --network lms_net \
+              redis:7-alpine
+
+            # Wait for Postgres to become ready
+            echo "Waiting for Postgres to be ready..."
+            for i in $(seq 1 30); do
+              if $DOCKER exec pg pg_isready -U "$DB_USER" -d "$DB_NAME" -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+                echo "Postgres is ready"; break
+              fi
+              sleep 2
+              if [ "$i" -eq 30 ]; then echo "Postgres did not become ready in time"; exit 1; fi
+            done
+
+            # Build env overrides for app only when needed
+            APP_ENVS=""
+            [ -n "$DB_HOST" ] && APP_ENVS="$APP_ENVS -e DB_HOST=$DB_HOST"
+            [ -n "$DB_PORT" ] && APP_ENVS="$APP_ENVS -e DB_PORT=$DB_PORT"
+            [ -n "$CELERY_BROKER_URL" ] && APP_ENVS="$APP_ENVS -e CELERY_BROKER_URL=$CELERY_BROKER_URL"
+            [ -n "$CELERY_RESULT_BACKEND" ] && APP_ENVS="$APP_ENVS -e CELERY_RESULT_BACKEND=$CELERY_RESULT_BACKEND"
+
+            # Restart app container
+            $DOCKER stop myapp >/dev/null 2>&1 || true
+            $DOCKER rm myapp >/dev/null 2>&1 || true
+            # shellcheck disable=SC2086
+            $DOCKER run -d --name myapp \
+              --restart unless-stopped \
+              --env-file "$ENV_FILE" \
+              --network lms_net \
+              -p 80:8000 \
+              $APP_ENVS \
+              "$APP_IMAGE"
+
+            # Apply migrations inside the running app container
+            $DOCKER exec myapp python manage.py migrate --noinput || { echo "Migrations failed"; exit 1; }
+          EOF
