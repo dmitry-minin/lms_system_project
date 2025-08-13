@@ -33,3 +33,6 @@ Troubleshooting
 Check logs: docker-compose logs
 Rebuild containers: docker-compose up -d --build
 Clear volumes: docker-compose down -v
+
+
+

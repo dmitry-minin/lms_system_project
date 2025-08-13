@@ -131,6 +131,22 @@ jobs:
             fi
             # Path to env file on the server
             ENV_FILE="/root/lms_app_test/.env"
+            # Ensure env file exists (use sudo for root path access); fail fast with clear message
+            if ! sudo test -f "$ENV_FILE"; then
+              echo "ERROR: Env file not found at $ENV_FILE"
+              echo "Create it on the server, e.g.:"
+              echo "  sudo mkdir -p /root/lms_app_test && sudo sh -c 'cat > $ENV_FILE <<\'EOE\'"
+              echo "  SECRET_KEY=..."
+              echo "  DEBUG=0"
+              echo "  DB_NAME=..."
+              echo "  DB_USER=..."
+              echo "  DB_PASSWORD=..."
+              echo "  DB_HOST=..."
+              echo "  DB_PORT=5432"
+              echo "  ALLOWED_HOSTS=..."
+              echo "  EOE"
+              exit 1
+            fi
             # Login to Docker Hub (required for private repos)
             echo ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }} | $DOCKER login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
             $DOCKER pull ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}
