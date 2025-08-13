@@ -133,26 +133,60 @@ jobs:
             ENV_FILE="/root/lms_app_test/.env"
             # Ensure env file exists (use sudo for root path access); fail fast with clear message
             if ! sudo test -f "$ENV_FILE"; then
-              echo "ERROR: Env file not found at $ENV_FILE"
-              echo "Create it on the server, e.g.:"
-              echo "  sudo mkdir -p /root/lms_app_test && sudo sh -c 'cat > $ENV_FILE <<\'EOE\'"
-              echo "  SECRET_KEY=..."
-              echo "  DEBUG=0"
-              echo "  DB_NAME=..."
-              echo "  DB_USER=..."
-              echo "  DB_PASSWORD=..."
-              echo "  DB_HOST=..."
-              echo "  DB_PORT=5432"
-              echo "  ALLOWED_HOSTS=..."
-              echo "  EOE"
+              echo "ERROR: Env file not found at $ENV_FILE";
               exit 1
             fi
-            # Login to Docker Hub (required for private repos)
+
+            # Docker login and pull app image
             echo ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }} | $DOCKER login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
-            $DOCKER pull ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}
-            $DOCKER stop myapp || true
-            $DOCKER rm myapp || true
-            $DOCKER run -d --name myapp -p 80:8000 \
+            APP_IMAGE="${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}"
+            $DOCKER pull "$APP_IMAGE"
+
+            # Create network for the stack (idempotent)
+            $DOCKER network create lms_net >/dev/null 2>&1 || true
+
+            # Start Postgres container (idempotent recreate)
+            $DOCKER rm -f pg >/dev/null 2>&1 || true
+            $DOCKER volume create pgdata >/dev/null 2>&1 || true
+            $DOCKER run -d --name pg \
+              --restart unless-stopped \
+              --network lms_net \
+              -v pgdata:/var/lib/postgresql/data \
+              -e POSTGRES_DB=lms_project \
+              -e POSTGRES_USER=postgres \
+              -e POSTGRES_PASSWORD=0347 \
+              postgres:16
+
+            # Start Redis (optional; safe to run even if unused)
+            $DOCKER rm -f redis >/dev/null 2>&1 || true
+            $DOCKER run -d --name redis \
+              --restart unless-stopped \
+              --network lms_net \
+              redis:7-alpine
+
+            # Wait for Postgres to become ready
+            echo "Waiting for Postgres to be ready..."
+            for i in $(seq 1 30); do
+              if $DOCKER exec pg pg_isready -U postgres -d lms_project -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+                echo "Postgres is ready"; break
+              fi
+              sleep 2
+              if [ "$i" -eq 30 ]; then echo "Postgres did not become ready in time"; exit 1; fi
+            done
+
+            # Restart app container
+            $DOCKER stop myapp >/dev/null 2>&1 || true
+            $DOCKER rm myapp >/dev/null 2>&1 || true
+            $DOCKER run -d --name myapp \
+              --restart unless-stopped \
               --env-file "$ENV_FILE" \
-              ${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}
+              --network lms_net \
+              -e DB_HOST=pg -e DB_PORT=5432 \
+              -e CELERY_BROKER_URL=redis://redis:6379/0 \
+              -e CELERY_RESULT_BACKEND=redis://redis:6379/0 \
+              -p 80:8000 \
+              "$APP_IMAGE"
+
+            # Apply migrations inside the running app container
+            $DOCKER exec myapp python manage.py migrate --noinput || { echo "Migrations failed"; exit 1; }
           EOF
