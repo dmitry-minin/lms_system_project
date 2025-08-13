@@ -136,6 +136,26 @@ jobs:
               echo "ERROR: Env file not found at $ENV_FILE";
               exit 1
             fi
+            # Normalize line endings to avoid parsing issues
+            sudo sed -i 's/\r$//' "$ENV_FILE"
+
+            # Read DB credentials from the server env (do not hardcode in workflow)
+            DB_NAME=$(sudo awk -F= '/^DB_NAME=/{print $2}' "$ENV_FILE")
+            DB_USER=$(sudo awk -F= '/^DB_USER=/{print $2}' "$ENV_FILE")
+            DB_PASSWORD=$(sudo awk -F= '/^DB_PASSWORD=/{print $2}' "$ENV_FILE")
+            if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ]; then
+              echo "ERROR: DB_NAME/DB_USER/DB_PASSWORD must be set in $ENV_FILE"; exit 1; fi
+
+            # Optional DB/Redis settings from env with safe defaults
+            DB_HOST=$(sudo awk -F= '/^DB_HOST=/{print $2}' "$ENV_FILE")
+            DB_PORT=$(sudo awk -F= '/^DB_PORT=/{print $2}' "$ENV_FILE")
+            CELERY_BROKER_URL=$(sudo awk -F= '/^CELERY_BROKER_URL=/{print $2}' "$ENV_FILE")
+            CELERY_RESULT_BACKEND=$(sudo awk -F= '/^CELERY_RESULT_BACKEND=/{print $2}' "$ENV_FILE")
+            # Defaults if not provided
+            [ -z "$DB_HOST" ] && DB_HOST=pg
+            [ -z "$DB_PORT" ] && DB_PORT=5432
+            [ -z "$CELERY_BROKER_URL" ] && CELERY_BROKER_URL=redis://redis:6379/0
+            [ -z "$CELERY_RESULT_BACKEND" ] && CELERY_RESULT_BACKEND=redis://redis:6379/0
 
             # Docker login and pull app image
             echo ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }} | $DOCKER login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
@@ -145,16 +165,16 @@ jobs:
             # Create network for the stack (idempotent)
             $DOCKER network create lms_net >/dev/null 2>&1 || true
 
-            # Start Postgres container (idempotent recreate)
+            # Start Postgres container (idempotent recreate) using creds from env file
             $DOCKER rm -f pg >/dev/null 2>&1 || true
             $DOCKER volume create pgdata >/dev/null 2>&1 || true
             $DOCKER run -d --name pg \
               --restart unless-stopped \
               --network lms_net \
               -v pgdata:/var/lib/postgresql/data \
-              -e POSTGRES_DB=lms_project \
-              -e POSTGRES_USER=postgres \
-              -e POSTGRES_PASSWORD=0347 \
+              -e POSTGRES_DB="$DB_NAME" \
+              -e POSTGRES_USER="$DB_USER" \
+              -e POSTGRES_PASSWORD="$DB_PASSWORD" \
               postgres:16
 
             # Start Redis (optional; safe to run even if unused)
@@ -167,24 +187,30 @@ jobs:
             # Wait for Postgres to become ready
             echo "Waiting for Postgres to be ready..."
             for i in $(seq 1 30); do
-              if $DOCKER exec pg pg_isready -U postgres -d lms_project -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
+              if $DOCKER exec pg pg_isready -U "$DB_USER" -d "$DB_NAME" -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
                 echo "Postgres is ready"; break
               fi
               sleep 2
               if [ "$i" -eq 30 ]; then echo "Postgres did not become ready in time"; exit 1; fi
             done
 
+            # Build env overrides for app only when needed
+            APP_ENVS=""
+            [ -n "$DB_HOST" ] && APP_ENVS="$APP_ENVS -e DB_HOST=$DB_HOST"
+            [ -n "$DB_PORT" ] && APP_ENVS="$APP_ENVS -e DB_PORT=$DB_PORT"
+            [ -n "$CELERY_BROKER_URL" ] && APP_ENVS="$APP_ENVS -e CELERY_BROKER_URL=$CELERY_BROKER_URL"
+            [ -n "$CELERY_RESULT_BACKEND" ] && APP_ENVS="$APP_ENVS -e CELERY_RESULT_BACKEND=$CELERY_RESULT_BACKEND"
+
             # Restart app container
             $DOCKER stop myapp >/dev/null 2>&1 || true
             $DOCKER rm myapp >/dev/null 2>&1 || true
+            # shellcheck disable=SC2086
             $DOCKER run -d --name myapp \
               --restart unless-stopped \
               --env-file "$ENV_FILE" \
               --network lms_net \
-              -e DB_HOST=pg -e DB_PORT=5432 \
-              -e CELERY_BROKER_URL=redis://redis:6379/0 \
-              -e CELERY_RESULT_BACKEND=redis://redis:6379/0 \
               -p 80:8000 \
+              $APP_ENVS \
               "$APP_IMAGE"
 
             # Apply migrations inside the running app container
