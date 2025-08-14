@@ -1,8 +1,8 @@
-LMS sysem project.
+LMS system project.
 This system allows you to create courses, lessons, and manage users.
 
 # Features
-Cotains models:
+Contains models:
 - User
 - Course
 - Lesson
@@ -58,7 +58,7 @@ Pipeline stages
 - test: runs Poetry install, prepares CI .env, runs migrations and tests with coverage (artifact `coverage.xml`).
 - lint: flake8, isort --check, black --check.
 - build: builds and pushes Docker image to Docker Hub with tags `:latest` and `:${{ github.sha }}`.
-- deploy: SSH to server, clones/updates repo at the target commit, copies server `.env` next to `docker-compose.yml`, runs `docker compose up -d`, then `migrate` and `collectstatic` inside `lms_project`.
+- deploy: connects to the server over SSH, updates the code in `/root/lms_app_test` to the target commit, brings the stack up with `docker compose up -d`, and then runs `migrate` and `collectstatic` inside the `lms_project` container.
 
 One-time server preparation
 1) Install Docker + Compose V2 and ensure Docker is running.
@@ -73,24 +73,23 @@ One-time server preparation
    - SSH_USER (e.g. `dmitry`)
    - SERVER_IP (e.g. `51.250.44.255`)
 
-How deploy works
-- The workflow connects to the server, ensures repo at `/root/lms_app_repo` is on the current commit, copies `/root/lms_app_test/.env` to `/root/lms_app_repo/.env` (so env_file: .env works), then executes:
-  - `docker compose pull || true`
-  - `docker compose up -d --remove-orphans`
-  - `docker compose exec -T lms_project python manage.py migrate --noinput`
-  - `docker compose exec -T lms_project python manage.py collectstatic --noinput`
-
-Triggering deploy
-- Any push or pull request runs test + lint; on success build runs, and then deploy.
-- To limit deploy to a specific branch, add an `if:` condition to the `deploy` job (not enabled by default).
+How the deploy works
+- The workflow connects to your server and operates in `/root/lms_app_test`, where both the code and your `.env` live. Nothing is copied around: the `.env` file stays in place next to `docker-compose.yml` and is used via `env_file`.
+- Before starting new containers, we gently clean up the environment: bring the previous Compose stack down, remove old standalone containers named `redis` and `db` if they exist, and free up port 80 by stopping a host nginx service or any container that occupies it.
+- We export a simple environment variable for Compose to silence warnings: `lv=prod`.
+- Then we run the following commands:
+  - `docker compose -f /root/lms_app_test/docker-compose.yml pull || true`
+  - `docker compose -f /root/lms_app_test/docker-compose.yml up -d --remove-orphans`
+  - `docker compose -f /root/lms_app_test/docker-compose.yml exec -T lms_project python manage.py migrate --noinput`
+  - `docker compose -f /root/lms_app_test/docker-compose.yml exec -T lms_project python manage.py collectstatic --noinput`
 
 Server URL
-- Application via nginx (production): `http://<SERVER_IP>/`
-- Admin: `http://<SERVER_IP>/admin/`
+- Application via nginx (production): `http://51.250.44.255/`
+- Admin: `http://м/admin/`
 
 What not to commit
 - `.env`, virtual environments, caches, `__pycache__`, IDE folders — covered by `.gitignore`.
 - Keep `.env.sample` in the repo with variable names only (no secrets).
 
 Local development note
-- For convenience, the Django container also exposes `8000:8000`. In production access should go through nginx on port 80.
+- For convenience in development, Django is also available at `http://localhost:8000` (`8000:8000`). In production, always access the app through nginx on port 80.
