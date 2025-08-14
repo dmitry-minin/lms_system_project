@@ -158,6 +158,11 @@ jobs:
             }
             sudo git -C "$REPO_DIR" reset --hard ${{ github.sha }} || sudo git -C "$REPO_DIR" reset --hard origin/main
 
+            # Pre-clean: stop previous compose stack and remove conflicting standalone containers
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" down --remove-orphans || true
+            # Remove old containers created outside compose that use global names
+            $DOCKER rm -f redis db >/dev/null 2>&1 || true
+
             # Compose deploy using explicit file (no cd)
             $DOCKER compose -f "$REPO_DIR/docker-compose.yml" pull || true
             $DOCKER compose -f "$REPO_DIR/docker-compose.yml" up -d --remove-orphans
