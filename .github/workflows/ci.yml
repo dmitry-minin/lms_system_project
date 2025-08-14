@@ -150,13 +150,23 @@ jobs:
               sudo git init "$REPO_DIR"
               sudo git -C "$REPO_DIR" remote add origin https://github.com/${{ github.repository }} || true
             fi
-            sudo git -C "$REPO_DIR" fetch --all --prune
-            # Checkout the exact commit of this workflow
-            sudo git -C "$REPO_DIR" checkout -f ${{ github.sha }} || {
-              # Fallback to main if SHA not present (e.g. shallow)
-              sudo git -C "$REPO_DIR" checkout -f origin/main;
-            }
-            sudo git -C "$REPO_DIR" reset --hard ${{ github.sha }} || sudo git -C "$REPO_DIR" reset --hard origin/main
+
+            # Fetch the exact commit; if not available, fetch all and fallback to branch
+            export GIT_TERMINAL_PROMPT=0
+            sudo git -C "$REPO_DIR" fetch --no-tags --prune --depth=1 origin "+${{ github.sha }}:${{ github.sha }}" || true
+            if ! sudo git -C "$REPO_DIR" cat-file -e "${{ github.sha }}^{commit}" 2>/dev/null; then
+              sudo git -C "$REPO_DIR" fetch --all --prune || true
+            
+              # Try to checkout by branch name from the workflow ref, then fall back
+              BRAN="${GITHUB_REF_NAME:-develop}"
+              sudo git -C "$REPO_DIR" checkout -f "origin/$BRAN" || \
+              sudo git -C "$REPO_DIR" checkout -f origin/develop || \
+              sudo git -C "$REPO_DIR" checkout -f origin/main
+              sudo git -C "$REPO_DIR" reset --hard || true
+            else
+              sudo git -C "$REPO_DIR" checkout -f "${{ github.sha }}"
+              sudo git -C "$REPO_DIR" reset --hard "${{ github.sha }}"
+            fi
 
             # Pre-clean: stop previous compose stack and remove conflicting standalone containers
             $DOCKER compose -f "$REPO_DIR/docker-compose.yml" down --remove-orphans || true
