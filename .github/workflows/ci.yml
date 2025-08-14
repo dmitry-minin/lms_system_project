@@ -136,7 +136,7 @@ jobs:
 
             # Paths
             ENV_FILE="/root/lms_app_test/.env"
-            REPO_DIR="/root/lms_app_repo"
+            REPO_DIR="/root/lms_app_test"
 
             # Ensure env file exists (use sudo for root path access)
             if ! sudo test -f "$ENV_FILE"; then
@@ -144,25 +144,25 @@ jobs:
             fi
             sudo sed -i 's/\r$//' "$ENV_FILE"
 
-            # Clone or update repo
+            # Clone or update repo directly into REPO_DIR (preserving .env)
             if [ ! -d "$REPO_DIR/.git" ]; then
-              sudo rm -rf "$REPO_DIR" || true
-              git clone https://github.com/${{ github.repository }} "$REPO_DIR"
-            else
-              git -C "$REPO_DIR" fetch --all --prune
+              # If directory exists (for .env), init repo there
+              sudo git init "$REPO_DIR"
+              sudo git -C "$REPO_DIR" remote add origin https://github.com/${{ github.repository }} || true
             fi
-            # Checkout latest for the default branch or update working tree
-            git -C "$REPO_DIR" reset --hard origin/"${GITHUB_REF_NAME:-main}" || git -C "$REPO_DIR" reset --hard
+            sudo git -C "$REPO_DIR" fetch --all --prune
+            # Checkout the exact commit of this workflow
+            sudo git -C "$REPO_DIR" checkout -f ${{ github.sha }} || {
+              # Fallback to main if SHA not present (e.g. shallow)
+              sudo git -C "$REPO_DIR" checkout -f origin/main;
+            }
+            sudo git -C "$REPO_DIR" reset --hard ${{ github.sha }} || sudo git -C "$REPO_DIR" reset --hard origin/main
 
-            # Place env file next to docker-compose.yml so env_file: .env works
-            sudo cp "$ENV_FILE" "$REPO_DIR/.env"
-
-            # Compose deploy
-            cd "$REPO_DIR"
-            $DOCKER compose pull || true
-            $DOCKER compose up -d --remove-orphans
+            # Compose deploy using explicit file (no cd)
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" pull || true
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" up -d --remove-orphans
 
             # Run migrations and collect static
-            $DOCKER compose exec -T lms_project python manage.py migrate --noinput
-            $DOCKER compose exec -T lms_project python manage.py collectstatic --noinput
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" exec -T lms_project python manage.py migrate --noinput
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" exec -T lms_project python manage.py collectstatic --noinput
           EOF
