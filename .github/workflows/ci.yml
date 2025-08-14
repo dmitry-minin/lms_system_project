@@ -213,6 +213,9 @@ jobs:
               $APP_ENVS \
               "$APP_IMAGE"
 
-            # Apply migrations inside the running app container
-            $DOCKER exec myapp python manage.py migrate --noinput || { echo "Migrations failed"; exit 1; }
+            # Run migrations (idempotent)
+            docker compose exec -T lms_project python manage.py migrate --noinput
+
+            # Collect static files for nginx
+            docker compose exec -T lms_project python manage.py collectstatic --noinput
           EOF

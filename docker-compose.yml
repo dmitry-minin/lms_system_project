@@ -5,7 +5,7 @@ services:
       bash -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
     volumes:
       - .:/code
-      - static_volume:/code/static
+      - staticfiles:/code/staticfiles
     ports:
       - "8000:8000"
     env_file:
@@ -21,6 +21,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - web
 
   redis:
     image: redis:7-alpine
@@ -87,9 +91,19 @@ services:
       timeout: 5s
       retries: 5
 
+  nginx:
+    build: ./nginx
+    container_name: nginx
+    ports:
+      - "80:80"
+    depends_on:
+      - lms_project
+    volumes:
+      - staticfiles:/app/staticfiles
+
 networks:
   default:
 
 volumes:
   postgres_data:
-  static_volume:
+  staticfiles:
