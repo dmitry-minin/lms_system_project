@@ -163,6 +163,17 @@ jobs:
             # Remove old containers created outside compose that use global names
             $DOCKER rm -f redis db >/dev/null 2>&1 || true
 
+            # Free port 80: stop host nginx and any containers publishing 80
+            if command -v systemctl >/dev/null 2>&1; then
+              sudo systemctl stop nginx || true
+              sudo systemctl disable nginx || true
+            fi
+            P80_CONTAINERS=$($DOCKER ps -q --filter publish=80)
+            if [ -n "$P80_CONTAINERS" ]; then
+              $DOCKER stop -t 5 $P80_CONTAINERS || true
+              $DOCKER rm -f $P80_CONTAINERS || true
+            fi
+
             # Compose deploy using explicit file (no cd)
             $DOCKER compose -f "$REPO_DIR/docker-compose.yml" pull || true
             $DOCKER compose -f "$REPO_DIR/docker-compose.yml" up -d --remove-orphans
