@@ -1,8 +1,8 @@
-LMS sysem project.
+LMS system project.
 This system allows you to create courses, lessons, and manage users.
 
 # Features
-Cotains models:
+Contains models:
 - User
 - Course
 - Lesson
@@ -13,121 +13,83 @@ Feature2:
 - new model Payments(user, payment_date, course, lesson, amount, payment_method) - created
 
 
-# Quick Start with Docker Compose
-Start the Project
-docker-compose up -d --build
-Stop the Project
-docker-compose down
-Verify Services
-Django App: http://localhost:8000
-Admin Panel: http://localhost:8000/admin
-Celery Worker: docker-compose logs -f celery_worker
-Celery Beat: docker-compose logs -f celery_beat
-Redis: docker-compose exec redis redis-cli ping
-PostgreSQL: docker-compose exec db psql -U $DB_USER -d $DB_NAME -c "SELECT 1"
-Common Commands
-Create superuser: docker-compose exec lms_project python manage.py createsuperuser
-Run migrations: docker-compose exec lms_project python manage.py migrate
-View logs: docker-compose logs -f [service_name]
+# Quick Start with Docker Compose (local)
+
+Services (via docker-compose.yml):
+- Django app: lms_project (port 8000 inside, proxied by nginx)
+- PostgreSQL: db (exposed on 5434 locally)
+- Redis: redis (exposed on 6379 locally)
+- Celery worker: celery_worker
+- Celery beat: celery_beat
+- Nginx: nginx (exposes 80 locally and proxies to lms_project:8000)
+
+Start the project
+- docker compose up -d --build
+
+Stop the project
+- docker compose down
+
+Verify services
+- App via nginx: http://localhost
+- Admin: http://localhost/admin
+- Django direct (dev only): http://localhost:8000
+- Celery Worker logs: docker compose logs -f celery_worker
+- Celery Beat logs: docker compose logs -f celery_beat
+- Redis: docker compose exec redis redis-cli ping
+- PostgreSQL: docker compose exec db psql -U $DB_USER -d $DB_NAME -c "SELECT 1"
+
+Common commands
+- Create superuser: docker compose exec lms_project python manage.py createsuperuser
+- Run migrations: docker compose exec lms_project python manage.py migrate
+- Collect static: docker compose exec lms_project python manage.py collectstatic --noinput
+- View logs: docker compose logs -f [service_name]
+
 Troubleshooting
-Check logs: docker-compose logs
-Rebuild containers: docker-compose up -d --build
-Clear volumes: docker-compose down -v
+- Check logs: docker compose logs
+- Rebuild containers: docker compose up -d --build
+- Clear volumes: docker compose down -v
 
 
+# CI/CD and Deployment to a Remote Server (GitHub Actions)
 
+Workflow file: `.github/workflows/ci.yml`
 
-## CI/CD and Deployment to a Remote Server (GitHub Actions)
+Pipeline stages
+- test: runs Poetry install, prepares CI .env, runs migrations and tests with coverage (artifact `coverage.xml`).
+- lint: flake8, isort --check, black --check.
+- build: builds and pushes Docker image to Docker Hub with tags `:latest` and `:${{ github.sha }}`.
+- deploy: connects to the server over SSH, updates the code in `/root/lms_app_test` to the target commit, brings the stack up with `docker compose up -d`, and then runs `migrate` and `collectstatic` inside the `lms_project` container.
 
-Below are the steps to prepare the server and enable automatic deployment after tests pass.
+One-time server preparation
+1) Install Docker + Compose V2 and ensure Docker is running.
+2) Create directory for environment file and put .env there (example keys, without secrets in Git):
+   - Path used by workflow: `/root/lms_app_test/.env`
+   - Required keys include: SECRET_KEY, DEBUG, ALLOWED_HOSTS, DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, CELERY_BROKER_URL, CELERY_RESULT_BACKEND, email credentials as needed.
+   - For Compose stack: typically `DB_HOST=db`, `DB_PORT=5432`, `CELERY_BROKER_URL=redis://redis:6379/0`, `CELERY_RESULT_BACKEND=redis://redis:6379/0`.
+3) Create GitHub repository secrets (Settings → Secrets and variables → Actions):
+   - DOCKER_HUB_USERNAME
+   - DOCKER_HUB_ACCESS_TOKEN
+   - SSH_KEY (private key, OpenSSH format)
+   - SSH_USER (e.g. `dmitry`)
+   - SERVER_IP (e.g. `51.250.44.255`)
 
-### 1) Server preparation (one-time)
-- Install Docker and start the service:
-  - Ubuntu: `sudo apt update && sudo apt install -y docker.io`
-  - `sudo systemctl enable --now docker`
-- (Optional) Allow your user to run Docker without sudo:
-  - `sudo usermod -aG docker $USER` then re-login, or keep using `sudo docker ...`.
-- Create a directory for the env file:
-  - `sudo mkdir -p /root/lms_app_test`
-- Create the environment file for the container (example):
-  - `sudo tee /root/lms_app_test/.env > /dev/null <<'EOF'
-SECRET_KEY=...
-DEBUG=0
-ALLOWED_HOSTS=51.250.44.255
+How the deploy works
+- The workflow connects to your server and operates in `/root/lms_app_test`, where both the code and your `.env` live. Nothing is copied around: the `.env` file stays in place next to `docker-compose.yml` and is used via `env_file`.
+- Before starting new containers, we gently clean up the environment: bring the previous Compose stack down, remove old standalone containers named `redis` and `db` if they exist, and free up port 80 by stopping a host nginx service or any container that occupies it.
+- We export a simple environment variable for Compose to silence warnings: `lv=prod`.
+- Then we run the following commands:
+  - `docker compose -f /root/lms_app_test/docker-compose.yml pull || true`
+  - `docker compose -f /root/lms_app_test/docker-compose.yml up -d --remove-orphans`
+  - `docker compose -f /root/lms_app_test/docker-compose.yml exec -T lms_project python manage.py migrate --noinput`
+  - `docker compose -f /root/lms_app_test/docker-compose.yml exec -T lms_project python manage.py collectstatic --noinput`
 
-DB_NAME=...
-DB_USER=...
-DB_PASSWORD=...
-DB_HOST=51.250.44.255
-DB_PORT=5433
+Server URL
+- Application via nginx (production): `http://51.250.44.255/`
+- Admin: `http://м/admin/`
 
-STRIPE_SECRET_KEY=...
-CELERY_BROKER_URL=redis://51.250.44.255:6379/0
-CELERY_RESULT_BACKEND=redis://51.250.44.255:6379/0
+What not to commit
+- `.env`, virtual environments, caches, `__pycache__`, IDE folders — covered by `.gitignore`.
+- Keep `.env.sample` in the repo with variable names only (no secrets).
 
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USE_TLS=True
-EMAIL_USE_SSL=False
-EMAIL_HOST_USER=...
-EMAIL_HOST_PASSWORD=...
-DEFAULT_FROM_EMAIL=...
-EOF`
-
-Notes:
-- `.env` may only contain lines in `KEY=VALUE` format or comments starting with `#`.
-- If Postgres/Redis are on the same server, ensure they listen on the external interface (server IP) and not only on `127.0.0.1`.
-
-### 2) GitHub Secrets
-Create repository secrets: Settings → Secrets and variables → Actions → New repository secret
-- `DOCKER_HUB_USERNAME` — your Docker Hub username
-- `DOCKER_HUB_ACCESS_TOKEN` — Docker Hub access token with Read/Write
-- `SSH_KEY` — private SSH key (multiline OpenSSH format, no passphrase)
-- `SSH_USER` — server user (e.g., `dmitry`)
-- `SERVER_IP` — server IP (e.g., `51.250.44.255`)
-
-### 3) How the workflow works
-File: `.github/workflows/ci.yml`
-- Triggers on every `push` and `pull_request`.
-- Job `test`:
-  - Starts Postgres service.
-  - Installs dependencies via Poetry.
-  - Creates a CI `.env`.
-  - Runs migrations and tests with coverage (artifact `coverage.xml`).
-- Job `build` (after tests):
-  - Logs in to Docker Hub and builds/pushes the image: `DOCKER_HUB_USERNAME/myapp:<sha>`, and `:latest`.
-- Job `deploy` (after build):
-  - SSH to the server.
-  - Runs `docker login`, `pull`, stops and removes `myapp` container if exists, then starts a new one:
-    - Publishes port `80:8000`.
-    - Uses env file: `/root/lms_app_test/.env`.
-  - Falls back to `sudo docker` if the user has no direct access to the Docker daemon.
-
-(Optional) Restrict deployment to a branch by adding to `deploy` job:
-```
-if: github.ref == 'refs/heads/main'
-```
-(or replace `main` with `develop`, etc.).
-
-### 4) Run and rollback
-- Any `push` runs tests; on success it builds and deploys.
-- Check the container on the server:
-  - `sudo docker ps -a | grep myapp`
-  - Logs: `sudo docker logs -f myapp`
-- Restart container manually:
-  - `sudo docker restart myapp`
-- Stop and remove:
-  - `sudo docker stop myapp || true && sudo docker rm myapp || true`
-
-### 5) Troubleshooting
-- Error `invalid env file`: ensure `.env` has only `KEY=VALUE` lines and no CRLF. Remove CR: `sudo sed -i 's/\r$//' /root/lms_app_test/.env`.
-- No access to Docker: add your user to the `docker` group or use `sudo docker`.
-- DB/Redis connectivity: ensure services listen on server IP and ports are reachable from the container.
-- Port 80 is busy: change port mapping in the workflow to `-p 8000:8000` and open `http://SERVER_IP:8000`.
-
-### 6) What not to commit
-- `.env`, virtual environments, caches, etc. — already covered by `.gitignore`.
-- Keep an `.env.sample` listing keys without secrets in the repo instead.
-
-### 7) Local development (reminder)
-See the "Quick Start with Docker Compose" section above for local `docker-compose` usage.
+Local development note
+- For convenience in development, Django is also available at `http://localhost:8000` (`8000:8000`). In production, always access the app through nginx on port 80.

@@ -129,90 +129,69 @@ jobs:
             if ! $DOCKER info >/dev/null 2>&1; then
               DOCKER="sudo docker"
             fi
-            # Path to env file on the server
-            ENV_FILE="/root/lms_app_test/.env"
-            # Ensure env file exists (use sudo for root path access); fail fast with clear message
-            if ! sudo test -f "$ENV_FILE"; then
-              echo "ERROR: Env file not found at $ENV_FILE";
-              exit 1
+            # Ensure Docker Compose V2 is available
+            if ! $DOCKER compose version >/dev/null 2>&1; then
+              echo "ERROR: Docker Compose V2 not found. Install docker-compose-plugin."; exit 1
             fi
-            # Normalize line endings to avoid parsing issues
+
+            # Paths
+            ENV_FILE="/root/lms_app_test/.env"
+            REPO_DIR="/root/lms_app_test"
+
+            # Ensure env file exists (use sudo for root path access)
+            if ! sudo test -f "$ENV_FILE"; then
+              echo "ERROR: Env file not found at $ENV_FILE"; exit 1
+            fi
             sudo sed -i 's/\r$//' "$ENV_FILE"
 
-            # Read DB credentials from the server env (do not hardcode in workflow)
-            DB_NAME=$(sudo awk -F= '/^DB_NAME=/{print $2}' "$ENV_FILE")
-            DB_USER=$(sudo awk -F= '/^DB_USER=/{print $2}' "$ENV_FILE")
-            DB_PASSWORD=$(sudo awk -F= '/^DB_PASSWORD=/{print $2}' "$ENV_FILE")
-            if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ] || [ -z "$DB_PASSWORD" ]; then
-              echo "ERROR: DB_NAME/DB_USER/DB_PASSWORD must be set in $ENV_FILE"; exit 1; fi
+            # Clone or update repo directly into REPO_DIR (preserving .env)
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              # If directory exists (for .env), init repo there
+              sudo git init "$REPO_DIR"
+              sudo git -C "$REPO_DIR" remote add origin https://github.com/${{ github.repository }} || true
+            fi
 
-            # Optional DB/Redis settings from env with safe defaults
-            DB_HOST=$(sudo awk -F= '/^DB_HOST=/{print $2}' "$ENV_FILE")
-            DB_PORT=$(sudo awk -F= '/^DB_PORT=/{print $2}' "$ENV_FILE")
-            CELERY_BROKER_URL=$(sudo awk -F= '/^CELERY_BROKER_URL=/{print $2}' "$ENV_FILE")
-            CELERY_RESULT_BACKEND=$(sudo awk -F= '/^CELERY_RESULT_BACKEND=/{print $2}' "$ENV_FILE")
-            # Defaults if not provided
-            [ -z "$DB_HOST" ] && DB_HOST=pg
-            [ -z "$DB_PORT" ] && DB_PORT=5432
-            [ -z "$CELERY_BROKER_URL" ] && CELERY_BROKER_URL=redis://redis:6379/0
-            [ -z "$CELERY_RESULT_BACKEND" ] && CELERY_RESULT_BACKEND=redis://redis:6379/0
+            # Fetch the exact commit; if not available, fetch all and fallback to branch
+            export GIT_TERMINAL_PROMPT=0
+            sudo git -C "$REPO_DIR" fetch --no-tags --prune --depth=1 origin "+${{ github.sha }}:${{ github.sha }}" || true
+            if ! sudo git -C "$REPO_DIR" cat-file -e "${{ github.sha }}^{commit}" 2>/dev/null; then
+              sudo git -C "$REPO_DIR" fetch --all --prune || true
+            
+              # Try to checkout by branch name from the workflow ref, then fall back
+              BRAN="${GITHUB_REF_NAME:-develop}"
+              sudo git -C "$REPO_DIR" checkout -f "origin/$BRAN" || \
+              sudo git -C "$REPO_DIR" checkout -f origin/develop || \
+              sudo git -C "$REPO_DIR" checkout -f origin/main
+              sudo git -C "$REPO_DIR" reset --hard || true
+            else
+              sudo git -C "$REPO_DIR" checkout -f "${{ github.sha }}"
+              sudo git -C "$REPO_DIR" reset --hard "${{ github.sha }}"
+            fi
 
-            # Docker login and pull app image
-            echo ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }} | $DOCKER login -u ${{ secrets.DOCKER_HUB_USERNAME }} --password-stdin
-            APP_IMAGE="${{ secrets.DOCKER_HUB_USERNAME }}/myapp:${{ github.sha }}"
-            $DOCKER pull "$APP_IMAGE"
+            # Pre-clean: stop previous compose stack and remove conflicting standalone containers
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" down --remove-orphans || true
+            # Remove old containers created outside compose that use global names
+            $DOCKER rm -f redis db >/dev/null 2>&1 || true
 
-            # Create network for the stack (idempotent)
-            $DOCKER network create lms_net >/dev/null 2>&1 || true
+            # Free port 80: stop host nginx and any containers publishing 80
+            if command -v systemctl >/dev/null 2>&1; then
+              sudo systemctl stop nginx || true
+              sudo systemctl disable nginx || true
+            fi
+            P80_CONTAINERS=$($DOCKER ps -q --filter publish=80)
+            if [ -n "$P80_CONTAINERS" ]; then
+              $DOCKER stop -t 5 $P80_CONTAINERS || true
+              $DOCKER rm -f $P80_CONTAINERS || true
+            fi
 
-            # Start Postgres container (idempotent recreate) using creds from env file
-            $DOCKER rm -f pg >/dev/null 2>&1 || true
-            $DOCKER volume create pgdata >/dev/null 2>&1 || true
-            $DOCKER run -d --name pg \
-              --restart unless-stopped \
-              --network lms_net \
-              -v pgdata:/var/lib/postgresql/data \
-              -e POSTGRES_DB="$DB_NAME" \
-              -e POSTGRES_USER="$DB_USER" \
-              -e POSTGRES_PASSWORD="$DB_PASSWORD" \
-              postgres:16
+            # Set compose env var
+            export lv=prod
 
-            # Start Redis (optional; safe to run even if unused)
-            $DOCKER rm -f redis >/dev/null 2>&1 || true
-            $DOCKER run -d --name redis \
-              --restart unless-stopped \
-              --network lms_net \
-              redis:7-alpine
+            # Compose deploy using explicit file (no cd)
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" pull || true
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" up -d --remove-orphans
 
-            # Wait for Postgres to become ready
-            echo "Waiting for Postgres to be ready..."
-            for i in $(seq 1 30); do
-              if $DOCKER exec pg pg_isready -U "$DB_USER" -d "$DB_NAME" -h 127.0.0.1 -p 5432 >/dev/null 2>&1; then
-                echo "Postgres is ready"; break
-              fi
-              sleep 2
-              if [ "$i" -eq 30 ]; then echo "Postgres did not become ready in time"; exit 1; fi
-            done
-
-            # Build env overrides for app only when needed
-            APP_ENVS=""
-            [ -n "$DB_HOST" ] && APP_ENVS="$APP_ENVS -e DB_HOST=$DB_HOST"
-            [ -n "$DB_PORT" ] && APP_ENVS="$APP_ENVS -e DB_PORT=$DB_PORT"
-            [ -n "$CELERY_BROKER_URL" ] && APP_ENVS="$APP_ENVS -e CELERY_BROKER_URL=$CELERY_BROKER_URL"
-            [ -n "$CELERY_RESULT_BACKEND" ] && APP_ENVS="$APP_ENVS -e CELERY_RESULT_BACKEND=$CELERY_RESULT_BACKEND"
-
-            # Restart app container
-            $DOCKER stop myapp >/dev/null 2>&1 || true
-            $DOCKER rm myapp >/dev/null 2>&1 || true
-            # shellcheck disable=SC2086
-            $DOCKER run -d --name myapp \
-              --restart unless-stopped \
-              --env-file "$ENV_FILE" \
-              --network lms_net \
-              -p 80:8000 \
-              $APP_ENVS \
-              "$APP_IMAGE"
-
-            # Apply migrations inside the running app container
-            $DOCKER exec myapp python manage.py migrate --noinput || { echo "Migrations failed"; exit 1; }
+            # Run migrations and collect static
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" exec -T lms_project python manage.py migrate --noinput
+            $DOCKER compose -f "$REPO_DIR/docker-compose.yml" exec -T lms_project python manage.py collectstatic --noinput
           EOF
